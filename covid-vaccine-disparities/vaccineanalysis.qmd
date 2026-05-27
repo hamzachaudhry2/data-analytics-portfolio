@@ -1,0 +1,841 @@
+---
+title: "Modeling Geographic Disparities in COVID-19 Vaccine Uptake"
+author: "Hamza Chaudhry"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    number-sections: true
+    theme: cosmo
+    fig-width: 7
+    fig-height: 5
+    fig-dpi: 300
+    embed-resources: true
+    code-fold: true
+    code-tools: true
+  pdf:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    fig-width: 6.5
+    fig-height: 4.5
+    fig-dpi: 300
+    geometry: margin=1in
+    fontsize: 11pt
+    linestretch: 1.5
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: true
+bibliography: references.bib
+---
+
+```{r}
+#| label: setup
+#| cache: false
+
+# =============================================================================
+# LIBRARIES
+# =============================================================================
+
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(scales)
+library(ggrepel)
+library(corrplot)
+library(factoextra)
+library(cluster)
+library(lmtest)
+library(sandwich)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(countrycode)
+library(RColorBrewer)
+library(patchwork)
+library(car)
+
+# =============================================================================
+# GLOBAL THEME — applied to every ggplot in this document
+# Follows lecture guidelines: sans-serif, no chartjunk, no background fill,
+# axes readable horizontally, ~4:3 ratio
+# =============================================================================
+
+theme_thesis <- theme_classic(base_size = 11, base_family = "sans") +
+  theme(
+    plot.title       = element_text(size = 12, face = "bold"),
+    axis.title       = element_text(size = 10),
+    axis.text        = element_text(size = 9),
+    legend.title     = element_text(size = 10),
+    legend.text      = element_text(size = 9),
+    strip.text       = element_text(size = 9, face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+theme_set(theme_thesis)
+
+# Continent colour palette — distinguishable in colour and B&W (via shape)
+continent_colours <- c(
+  "Africa"        = "#E69F00",
+  "Asia"          = "#56B4E9",
+  "Europe"        = "#009E73",
+  "North America" = "#F0E442",
+  "Oceania"       = "#0072B2",
+  "South America" = "#D55E00"
+)
+
+continent_shapes <- c(16, 17, 15, 18, 8, 3)
+```
+
+# Introduction
+
+Modern history saw one of the biggest global health interventions with the
+rollout of COVID-19 vaccines. Despite widespread availability, vaccination
+uptake varied enormously across countries and regions. Understanding what
+drives these disparities — economic capacity, demographic structure, and
+government policy — is essential for evaluating past responses and informing
+future public health interventions.
+
+This analysis uses the Our World in Data (OWID) global COVID-19 dataset to
+examine geographic variation in vaccine uptake across approximately 200
+countries. The primary outcome of interest is the percentage of the population
+that is fully vaccinated. Explanatory variables include GDP per capita, the
+Human Development Index, median age, the proportion of the population aged
+65 and older, and a government stringency index.
+
+# Data
+
+## Loading the Dataset
+
+```{r}
+#| label: load-data
+
+data_path <- "~/Desktop/AMOD5610/owid-covid-data.csv"
+
+raw_data <- read_csv(data_path, show_col_types = FALSE)
+```
+
+The dataset contains **`r nrow(raw_data)`** rows and **`r ncol(raw_data)`**
+columns, covering countries worldwide from early 2020 onward.
+
+## Variable Selection
+
+The following variables are extracted from the full dataset in line with the
+study design outlined in the research proposal.
+
+```{r}
+#| label: select-vars
+
+selected_vars <- c(
+  "iso_code",
+  "continent",
+  "location",
+  "date",
+  "people_fully_vaccinated_per_hundred",
+  "people_vaccinated_per_hundred",
+  "total_boosters_per_hundred",
+  "gdp_per_capita",
+  "median_age",
+  "aged_65_older",
+  "human_development_index",
+  "stringency_index",
+  "population"
+)
+
+df <- raw_data %>%
+  select(all_of(selected_vars))
+```
+
+## Data Cleaning
+
+### Removing Aggregate Rows
+
+OWID includes rows for aggregates such as "World", "Asia", and income group
+bands. These are identified by ISO codes beginning with `OWID_` and are
+removed to retain individual countries only.
+
+```{r}
+#| label: remove-aggregates
+
+df <- df %>%
+  filter(!str_starts(iso_code, "OWID_")) %>%
+  filter(!is.na(continent)) %>%
+  mutate(date = as.Date(date))
+```
+
+After filtering, the dataset covers **`r n_distinct(df$location)`** countries.
+
+### Creating a Country-Level Snapshot
+
+Since the primary interest is in overall vaccination outcomes rather than
+daily changes, a single cross-sectional snapshot is constructed for each
+country. For vaccination variables the most recent non-missing value is used;
+for socioeconomic variables (which are essentially time-invariant in this
+dataset) the last non-missing value is also used. Government stringency is
+averaged across the entire pandemic period to capture overall policy intensity.
+
+```{r}
+#| label: snapshot
+
+country_snapshot <- df %>%
+  arrange(location, date) %>%
+  group_by(iso_code, location, continent) %>%
+  summarise(
+    fully_vax_pct   = last(people_fully_vaccinated_per_hundred[!is.na(people_fully_vaccinated_per_hundred)]),
+    one_dose_pct    = last(people_vaccinated_per_hundred[!is.na(people_vaccinated_per_hundred)]),
+    booster_pct     = last(total_boosters_per_hundred[!is.na(total_boosters_per_hundred)]),
+    gdp_per_capita  = last(gdp_per_capita[!is.na(gdp_per_capita)]),
+    median_age      = last(median_age[!is.na(median_age)]),
+    aged_65_older   = last(aged_65_older[!is.na(aged_65_older)]),
+    hdi             = last(human_development_index[!is.na(human_development_index)]),
+    stringency_mean = mean(stringency_index, na.rm = TRUE),
+    population      = last(population[!is.na(population)]),
+    last_vax_date   = max(date[!is.na(people_fully_vaccinated_per_hundred)],
+                          na.rm = TRUE),
+    .groups = "drop"
+  )
+
+country_clean <- country_snapshot %>%
+  filter(!is.na(fully_vax_pct)) %>%
+  mutate(
+    log_gdp      = log(gdp_per_capita),
+    income_group = countrycode(iso_code, origin = "iso3c",
+                               destination = "wb.income",
+                               warn = FALSE)
+  )
+```
+
+The cleaned snapshot retains **`r nrow(country_clean)`** countries with valid
+fully-vaccinated data.
+
+### Missing Value Summary
+
+```{r}
+#| label: missing-values
+
+missing_summary <- country_clean %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(),
+               names_to  = "Variable",
+               values_to = "Missing (n)") %>%
+  filter(`Missing (n)` > 0) %>%
+  arrange(desc(`Missing (n)`))
+
+missing_summary %>%
+  kable(caption = "Missing values per variable in the country-level snapshot.",
+        booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+# Exploratory Data Analysis
+
+## Distribution of Full Vaccination Rates
+
+```{r}
+#| label: fig-hist
+#| fig-cap: "Distribution of full vaccination rates across countries. Each bar represents the number of countries falling within a given percentage range."
+
+ggplot(country_clean, aes(x = fully_vax_pct)) +
+  geom_histogram(bins = 25, fill = "grey40", colour = "white",
+                 linewidth = 0.3) +
+  labs(
+    x = "Population fully vaccinated (%)",
+    y = "Number of countries"
+  )
+```
+
+## Vaccination Rates by Continent
+
+```{r}
+#| label: fig-dotplot-continent
+#| fig-cap: "Mean full vaccination rate by continent. A dot plot is used in preference to a bar chart, as point position on a common axis is more accurately decoded (Cleveland & McGill, 1985)."
+
+continent_summary <- country_clean %>%
+  group_by(continent) %>%
+  summarise(
+    mean_vax   = mean(fully_vax_pct, na.rm = TRUE),
+    median_vax = median(fully_vax_pct, na.rm = TRUE),
+    n          = n(),
+    .groups    = "drop"
+  ) %>%
+  arrange(mean_vax)
+
+ggplot(continent_summary,
+       aes(x = mean_vax, y = reorder(continent, mean_vax))) +
+  geom_segment(aes(xend = 0, yend = reorder(continent, mean_vax)),
+               colour = "grey70", linewidth = 0.5, linetype = "dashed") +
+  geom_point(size = 4, colour = "grey20", shape = 16) +
+  geom_text(aes(label = paste0(round(mean_vax, 1), "%")),
+            hjust = -0.3, size = 3, family = "sans") +
+  scale_x_continuous(limits = c(0, 90),
+                     labels = label_percent(scale = 1)) +
+  labs(
+    x = "Mean population fully vaccinated (%)",
+    y = NULL
+  )
+```
+
+## Distribution Within Continents
+
+```{r}
+#| label: fig-boxplot
+#| fig-cap: "Distribution of full vaccination rates by continent. Individual country values are overlaid as jittered points to show the underlying data."
+
+ggplot(country_clean,
+       aes(x = reorder(continent, fully_vax_pct, FUN = median),
+           y = fully_vax_pct)) +
+  geom_boxplot(outlier.shape = 1, outlier.size = 1.5,
+               fill = "grey90", colour = "grey30", linewidth = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1.2, colour = "grey40") +
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Population fully vaccinated (%)"
+  )
+```
+
+## Vaccination Roll-out Over Time
+
+```{r}
+#| label: fig-timeseries
+#| fig-cap: "Mean full vaccination rate by continent over time. Both colour and line type are used to distinguish continents, ensuring the figure is readable in black and white."
+#| fig-width: 8
+#| fig-height: 5
+
+ts_data <- df %>%
+  filter(!str_starts(iso_code, "OWID_"),
+         !is.na(continent),
+         !is.na(people_fully_vaccinated_per_hundred)) %>%
+  group_by(continent, date) %>%
+  summarise(mean_fully_vax = mean(people_fully_vaccinated_per_hundred,
+                                  na.rm = TRUE),
+            .groups = "drop")
+
+ggplot(ts_data,
+       aes(x = date, y = mean_fully_vax,
+           colour = continent, linetype = continent)) +
+  geom_line(linewidth = 0.9) +
+  scale_colour_manual(values = continent_colours, name = "Continent") +
+  scale_linetype_manual(
+    values = c("solid", "dashed", "dotted", "longdash", "twodash", "dotdash"),
+    name   = "Continent"
+  ) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = label_percent(scale = 1)) +
+  labs(
+    x = "Date",
+    y = "Mean population fully vaccinated (%)"
+  ) +
+  theme(
+    axis.text.x     = element_text(angle = 30, hjust = 1, size = 8),
+    legend.position = "right"
+  )
+```
+
+## Relationship Between Key Predictors and Vaccination Rate
+
+```{r}
+#| label: fig-scatter-gdp
+#| fig-cap: "Relationship between log GDP per capita and full vaccination rate. Both colour and point shape distinguish continents. The regression line is fitted across all countries."
+
+ggplot(country_clean %>% filter(!is.na(gdp_per_capita)),
+       aes(x = log_gdp, y = fully_vax_pct,
+           colour = continent, shape = continent)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, colour = "black",
+              linewidth = 0.8) +
+  scale_colour_manual(values = continent_colours, name = "Continent") +
+  scale_shape_manual(values = continent_shapes, name = "Continent") +
+  scale_x_continuous(
+    breaks = log(c(1000, 2500, 5000, 10000, 25000, 50000, 100000)),
+    labels = c("$1k", "$2.5k", "$5k", "$10k", "$25k", "$50k", "$100k")
+  ) +
+  labs(
+    x = "GDP per capita (log scale, USD)",
+    y = "Population fully vaccinated (%)"
+  ) +
+  theme(legend.position = "right")
+```
+
+```{r}
+#| label: fig-scatter-hdi
+#| fig-cap: "Relationship between Human Development Index and full vaccination rate."
+
+ggplot(country_clean %>% filter(!is.na(hdi)),
+       aes(x = hdi, y = fully_vax_pct,
+           colour = continent, shape = continent)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, colour = "black",
+              linewidth = 0.8) +
+  scale_colour_manual(values = continent_colours, name = "Continent") +
+  scale_shape_manual(values = continent_shapes, name = "Continent") +
+  labs(
+    x = "Human Development Index",
+    y = "Population fully vaccinated (%)"
+  ) +
+  theme(legend.position = "right")
+```
+
+```{r}
+#| label: fig-scatter-age
+#| fig-cap: "Relationship between median age and full vaccination rate."
+
+ggplot(country_clean %>% filter(!is.na(median_age)),
+       aes(x = median_age, y = fully_vax_pct,
+           colour = continent, shape = continent)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, colour = "black",
+              linewidth = 0.8) +
+  scale_colour_manual(values = continent_colours, name = "Continent") +
+  scale_shape_manual(values = continent_shapes, name = "Continent") +
+  labs(
+    x = "Median age (years)",
+    y = "Population fully vaccinated (%)"
+  ) +
+  theme(legend.position = "right")
+```
+
+```{r}
+#| label: fig-scatter-stringency
+#| fig-cap: "Relationship between mean government stringency index and full vaccination rate."
+
+ggplot(country_clean %>% filter(!is.na(stringency_mean)),
+       aes(x = stringency_mean, y = fully_vax_pct,
+           colour = continent, shape = continent)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, colour = "black",
+              linewidth = 0.8) +
+  scale_colour_manual(values = continent_colours, name = "Continent") +
+  scale_shape_manual(values = continent_shapes, name = "Continent") +
+  labs(
+    x = "Mean government stringency index",
+    y = "Population fully vaccinated (%)"
+  ) +
+  theme(legend.position = "right")
+```
+
+## Correlation Matrix
+
+```{r}
+#| label: fig-corrplot
+#| fig-cap: "Pairwise correlations between the outcome variable and key predictors. Circle size and colour intensity reflect the strength of the correlation."
+
+cor_vars <- country_clean %>%
+  select(
+    `Full vax %`    = fully_vax_pct,
+    `Log GDP`       = log_gdp,
+    `HDI`           = hdi,
+    `Median age`    = median_age,
+    `Aged 65+`      = aged_65_older,
+    `Stringency`    = stringency_mean
+  ) %>%
+  drop_na()
+
+cor_matrix <- cor(cor_vars, use = "complete.obs")
+
+corrplot(cor_matrix,
+         method      = "circle",
+         type        = "upper",
+         tl.col      = "black",
+         tl.cex      = 0.85,
+         cl.cex      = 0.75,
+         col         = colorRampPalette(c("#D55E00", "white", "#009E73"))(200),
+         addCoef.col = "black",
+         number.cex  = 0.75)
+```
+
+# Descriptive Statistics
+
+```{r}
+#| label: tbl-descriptive
+#| tbl-cap: "Descriptive statistics for key variables by continent."
+
+desc_table <- country_clean %>%
+  group_by(Continent = continent) %>%
+  summarise(
+    N                 = n(),
+    `Mean full vax (%)` = round(mean(fully_vax_pct, na.rm = TRUE), 1),
+    `Median full vax (%)` = round(median(fully_vax_pct, na.rm = TRUE), 1),
+    `SD full vax`     = round(sd(fully_vax_pct, na.rm = TRUE), 1),
+    `Mean GDP (USD)`  = round(mean(gdp_per_capita, na.rm = TRUE), 0),
+    `Mean HDI`        = round(mean(hdi, na.rm = TRUE), 3),
+    `Mean median age` = round(mean(median_age, na.rm = TRUE), 1),
+    `Mean stringency` = round(mean(stringency_mean, na.rm = TRUE), 1),
+    .groups = "drop"
+  )
+
+desc_table %>%
+  kable(booktabs = TRUE, align = "lrrrrrrr") %>%
+  kable_styling(full_width = TRUE, font_size = 10)
+```
+
+# Statistical Modelling
+
+Three OLS regression models are estimated with increasing complexity. Model 1
+uses GDP per capita alone as a baseline. Model 2 includes all key predictors.
+Model 3 adds continent fixed effects to account for unobserved regional factors.
+Heteroscedasticity-consistent (HC3) robust standard errors are reported
+throughout.
+
+## Model Estimation
+
+```{r}
+#| label: regression-models
+
+m1 <- lm(fully_vax_pct ~ log_gdp,
+          data = country_clean)
+
+m2 <- lm(fully_vax_pct ~ log_gdp + hdi + median_age +
+            aged_65_older + stringency_mean,
+          data = country_clean)
+
+m3 <- lm(fully_vax_pct ~ log_gdp + hdi + median_age +
+            aged_65_older + stringency_mean + continent,
+          data = country_clean)
+```
+
+## Model Summaries
+
+```{r}
+#| label: tbl-model1
+#| tbl-cap: "Model 1: GDP per capita only."
+
+tidy(m1, conf.int = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(., 4))) %>%
+  kable(booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+```{r}
+#| label: tbl-model2
+#| tbl-cap: "Model 2: Full predictor set, no fixed effects."
+
+tidy(m2, conf.int = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(., 4))) %>%
+  kable(booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+```{r}
+#| label: tbl-model3
+#| tbl-cap: "Model 3: Full predictor set with continent fixed effects."
+
+tidy(m3, conf.int = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(., 4))) %>%
+  kable(booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+## Model Fit Comparison
+
+```{r}
+#| label: tbl-model-fit
+#| tbl-cap: "R-squared and adjusted R-squared for all three models."
+
+tibble(
+  Model          = c("M1: GDP only", "M2: Full", "M3: Full + Continent FE"),
+  R2             = c(summary(m1)$r.squared,
+                     summary(m2)$r.squared,
+                     summary(m3)$r.squared),
+  `Adj. R2`      = c(summary(m1)$adj.r.squared,
+                     summary(m2)$adj.r.squared,
+                     summary(m3)$adj.r.squared),
+  AIC            = c(AIC(m1), AIC(m2), AIC(m3))
+) %>%
+  mutate(across(where(is.numeric), ~ round(., 4))) %>%
+  kable(booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+## Multicollinearity Check
+
+```{r}
+#| label: tbl-vif
+#| tbl-cap: "Variance inflation factors (VIF) for Model 2. Values above 5 indicate problematic multicollinearity."
+
+vif(m2) %>%
+  enframe(name = "Variable", value = "VIF") %>%
+  mutate(VIF = round(VIF, 3)) %>%
+  kable(booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+## Robust Standard Errors (Model 3)
+
+```{r}
+#| label: tbl-robust-se
+#| tbl-cap: "Model 3 coefficients with HC3 heteroscedasticity-consistent standard errors."
+
+coeftest(m3, vcov = vcovHC(m3, type = "HC3")) %>%
+  tidy() %>%
+  filter(!str_starts(term, "continent")) %>%
+  mutate(
+    term = recode(term,
+      "(Intercept)"    = "Intercept",
+      "log_gdp"        = "Log GDP per capita",
+      "hdi"            = "Human Development Index",
+      "median_age"     = "Median age",
+      "aged_65_older"  = "Population aged 65+",
+      "stringency_mean"= "Mean stringency index"
+    ),
+    across(where(is.numeric), ~ round(., 4))
+  ) %>%
+  kable(booktabs = TRUE,
+        col.names = c("Variable", "Estimate", "Std. Error", "t", "p-value")) %>%
+  kable_styling(full_width = FALSE)
+```
+
+## Coefficient Plot
+
+```{r}
+#| label: fig-coefplot
+#| fig-cap: "Regression coefficients with 95% confidence intervals from Model 3 (continent fixed effects not shown). Points to the right of the dashed line indicate a positive association with vaccination rate."
+
+coef_data <- tidy(m3, conf.int = TRUE) %>%
+  filter(
+    term != "(Intercept)",
+    !str_starts(term, "continent")
+  ) %>%
+  mutate(term = recode(term,
+    "log_gdp"         = "Log GDP per capita",
+    "hdi"             = "Human Development Index",
+    "median_age"      = "Median age",
+    "aged_65_older"   = "Population aged 65+",
+    "stringency_mean" = "Mean stringency index"
+  ))
+
+ggplot(coef_data,
+       aes(x = estimate, y = reorder(term, estimate))) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_segment(aes(x = conf.low, xend = conf.high,
+                   yend = reorder(term, estimate)),
+               colour = "grey40", linewidth = 0.9) +
+  geom_point(size = 3.5, shape = 16, colour = "grey20") +
+  labs(
+    x = "Regression coefficient (95% CI)",
+    y = NULL
+  )
+```
+
+## Regression Diagnostics
+
+```{r}
+#| label: fig-diagnostics
+#| fig-cap: "Regression diagnostic plots for Model 3."
+#| fig-width: 8
+#| fig-height: 6
+
+par(mfrow = c(2, 2), family = "sans", cex = 0.8)
+plot(m3)
+```
+
+# Clustering Analysis
+
+Countries are grouped using k-means clustering on six standardised variables:
+full vaccination rate, log GDP, HDI, median age, proportion aged 65+, and mean
+stringency. The optimal number of clusters is selected using the elbow method.
+
+```{r}
+#| label: clustering-setup
+
+cluster_countries <- country_clean %>%
+  filter(!is.na(fully_vax_pct), !is.na(log_gdp), !is.na(hdi),
+         !is.na(median_age), !is.na(aged_65_older), !is.na(stringency_mean))
+
+cluster_vars <- cluster_countries %>%
+  select(fully_vax_pct, log_gdp, hdi, median_age,
+         aged_65_older, stringency_mean)
+
+cluster_scaled <- scale(cluster_vars)
+```
+
+## Elbow Plot
+
+```{r}
+#| label: fig-elbow
+#| fig-cap: "Elbow plot for k-means clustering. The optimal k is identified at the point of diminishing returns in within-cluster sum of squares."
+
+set.seed(42)
+wss <- sapply(1:10, function(k) {
+  kmeans(cluster_scaled, centers = k, nstart = 25)$tot.withinss
+})
+
+ggplot(data.frame(k = 1:10, wss = wss),
+       aes(x = k, y = wss)) +
+  geom_line(linewidth = 0.8, colour = "grey30") +
+  geom_point(size = 3, shape = 16, colour = "grey20") +
+  scale_x_continuous(breaks = 1:10) +
+  labs(
+    x = "Number of clusters (k)",
+    y = "Total within-cluster sum of squares"
+  )
+```
+
+## K-Means Solution
+
+```{r}
+#| label: kmeans-run
+
+set.seed(42)
+km4 <- kmeans(cluster_scaled, centers = 4, nstart = 50)
+
+cluster_countries <- cluster_countries %>%
+  mutate(cluster = factor(km4$cluster))
+```
+
+## Cluster Profiles
+
+```{r}
+#| label: tbl-cluster-profiles
+#| tbl-cap: "Profile of each cluster: mean values of key variables."
+
+cluster_profile <- cluster_countries %>%
+  group_by(Cluster = cluster) %>%
+  summarise(
+    N                = n(),
+    `Mean full vax (%)`   = round(mean(fully_vax_pct), 1),
+    `Mean GDP (USD)` = round(mean(gdp_per_capita, na.rm = TRUE), 0),
+    `Mean HDI`       = round(mean(hdi, na.rm = TRUE), 3),
+    `Mean age`       = round(mean(median_age, na.rm = TRUE), 1),
+    `Mean stringency`= round(mean(stringency_mean, na.rm = TRUE), 1),
+    .groups = "drop"
+  )
+
+cluster_profile %>%
+  kable(booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+## Cluster Visualisation (PCA)
+
+```{r}
+#| label: fig-pca
+#| fig-cap: "PCA biplot of country clusters. Each point represents one country; colour indicates cluster membership and shape indicates continent."
+
+pca_res <- prcomp(cluster_scaled, scale. = FALSE)
+pca_df  <- as.data.frame(pca_res$x[, 1:2]) %>%
+  mutate(
+    cluster   = cluster_countries$cluster,
+    continent = cluster_countries$continent,
+    country   = cluster_countries$location
+  )
+
+var_exp <- round(summary(pca_res)$importance[2, 1:2] * 100, 1)
+
+ggplot(pca_df, aes(x = PC1, y = PC2,
+                   colour = cluster, shape = continent)) +
+  geom_point(size = 2.5, alpha = 0.85) +
+  scale_colour_manual(
+    values = c("1" = "#E69F00", "2" = "#56B4E9",
+               "3" = "#009E73", "4" = "#D55E00"),
+    name = "Cluster"
+  ) +
+  scale_shape_manual(values = continent_shapes, name = "Continent") +
+  labs(
+    x = paste0("PC1 (", var_exp[1], "% variance)"),
+    y = paste0("PC2 (", var_exp[2], "% variance)")
+  ) +
+  theme(legend.position = "right")
+```
+
+## Continental Composition of Clusters
+
+```{r}
+#| label: fig-cluster-composition
+#| fig-cap: "Continental composition of each cluster shown as a stacked horizontal bar chart."
+
+cluster_continent <- cluster_countries %>%
+  count(cluster, continent) %>%
+  group_by(cluster) %>%
+  mutate(pct = n / sum(n) * 100)
+
+ggplot(cluster_continent,
+       aes(x = pct, y = cluster, fill = continent)) +
+  geom_bar(stat = "identity", colour = "white", linewidth = 0.3) +
+  scale_fill_manual(values = continent_colours, name = "Continent") +
+  scale_x_continuous(labels = label_percent(scale = 1)) +
+  labs(
+    x = "Proportion of countries in cluster (%)",
+    y = "Cluster"
+  ) +
+  theme(legend.position = "right")
+```
+
+# Comparative Analysis
+
+## Top and Bottom Performers
+
+```{r}
+#| label: fig-top-bottom
+#| fig-cap: "The 20 highest and 20 lowest performing countries by full vaccination rate. Circles denote top performers; triangles denote bottom performers."
+#| fig-height: 9
+
+top20    <- country_clean %>%
+  arrange(desc(fully_vax_pct)) %>%
+  slice_head(n = 20) %>%
+  mutate(group = "Top 20")
+
+bottom20 <- country_clean %>%
+  arrange(fully_vax_pct) %>%
+  slice_head(n = 20) %>%
+  mutate(group = "Bottom 20")
+
+top_bottom <- bind_rows(top20, bottom20)
+
+ggplot(top_bottom,
+       aes(x = fully_vax_pct,
+           y = reorder(location, fully_vax_pct),
+           shape = group, colour = group)) +
+  geom_point(size = 2.5) +
+  scale_colour_manual(values = c("Top 20"    = "#009E73",
+                                 "Bottom 20" = "#D55E00"),
+                      name = NULL) +
+  scale_shape_manual(values  = c("Top 20"    = 16,
+                                 "Bottom 20" = 17),
+                     name = NULL) +
+  scale_x_continuous(labels = label_percent(scale = 1),
+                     limits = c(0, 100)) +
+  labs(
+    x = "Population fully vaccinated (%)",
+    y = NULL
+  ) +
+  theme(
+    legend.position = "top",
+    axis.text.y     = element_text(size = 7)
+  )
+```
+
+## Summary: Top vs Bottom 20
+
+```{r}
+#| label: tbl-top-bottom
+#| tbl-cap: "Mean characteristics of the top 20 and bottom 20 countries by vaccination rate."
+
+top_bottom %>%
+  group_by(Group = group) %>%
+  summarise(
+    `Mean full vax (%)` = round(mean(fully_vax_pct), 1),
+    `Mean GDP (USD)`    = round(mean(gdp_per_capita, na.rm = TRUE), 0),
+    `Mean HDI`          = round(mean(hdi, na.rm = TRUE), 3),
+    `Mean median age`   = round(mean(median_age, na.rm = TRUE), 1),
+    .groups = "drop"
+  ) %>%
+  kable(booktabs = TRUE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+
+```{r}
+#| label: session-info
+#| code-fold: false
+
+sessionInfo()
+```
