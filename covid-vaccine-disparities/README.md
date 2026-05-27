@@ -29,4 +29,4 @@ under-vaccinated regardless of supply availability.
 
 ## Files
 - `vaccineanalysis.qmd` — main analysis 
-- `5610_finalreport_hamza.docx` — full thesis write-up
+- `vaccineanalysis_report.pdf` — full thesis write-up
