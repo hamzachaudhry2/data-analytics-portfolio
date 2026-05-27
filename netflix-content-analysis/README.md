@@ -30,5 +30,5 @@ diversity — scaling content rapidly while maintaining familiar
 formats like feature-length films to retain global audiences.
 
 ## Files
-- `netflixanalysis.Rmd` — full ggplot2 analysis script
+- `netflixanalysis.Rmd` — full R Markdown analysis
 - `netflixanalysis_report.pdf` — full project write-up with visualizations
