@@ -38,5 +38,5 @@ dollar signs (1.84) and money keywords (1.50), revealing
 non-linear relationships missed by correlation analysis alone.
 
 ## Files
-- `spamemails.R` — full analysis and model training script
+- `spamemails.qmd` — full analysis and model training Quarto file
 - `spamemails_report.pdf` — full project write-up with results
