@@ -1,0 +1,130 @@
+---
+title: "AMOD5430 Project"
+author: "Hamza Chaudhry"
+date: "2025-07-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(ggplot2)
+
+setwd("~/Desktop/AMOD5430")
+
+# Netflix dataset im using
+netflix <- read.csv("netflix_titles.csv", stringsAsFactors = FALSE)
+
+# View column names and sample data
+head(netflix)
+str(netflix)
+```
+
+# Data Cleaning and Preparation
+
+```{r}
+# Using the date format
+netflix$date_added <- as.Date(netflix$date_added, format = "%B %d, %Y")
+
+netflix$year_added <- format(netflix$date_added, "%Y")
+
+# Cleaning the country and listed_in columns 
+netflix$country[is.na(netflix$country)] <- "Unknown"
+netflix$listed_in <- as.factor(netflix$listed_in)
+netflix$type <- as.factor(netflix$type)
+
+```
+
+# Figure 1: The Number of titles added to Netflix overtime
+```{r}
+ggplot(netflix, aes(x = year_added)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Figure 1: Number of Titles Added by Year",
+       x = "Year Added", y = "Count of Titles") +
+  theme_minimal()
+```
+# Figure 1 shows the number of titles added to Netflix each year based on the date_added column. 
+# There’s a clear surge from 2016 to 2020, suggesting Netflix aggressively expanded its library during this period. 
+# The decline post-2020 may reflect strategic shifts or disruptions during the pandemic. 
+# A small number of titles have missing dates, shown as “NA.”
+
+# Figure 2: Movies vs TV shows on Netflix
+```{r}
+ggplot(netflix, aes(x = type, fill = type)) +
+  geom_bar() +
+  labs(title = "Figure 2: Distribution of Content Type",
+       x = "Type", y = "Count") +
+  theme_minimal()
+```
+# Figure 2 illustrates the overall distribution of content types on Netflix. 
+# Movies dominate the platform, with more than twice the count of TV Shows. 
+# This shows Netflix’s preference for feature-length content, but serialized content is also important for user retention
+
+# Figure 3:Top 10 countries producing content on Netflix
+```{r}
+
+top_countries <- sort(table(netflix$country), decreasing = TRUE)[1:10]
+barplot(top_countries,
+        col = "darkred",
+        main = "Figure 3: Top 10 Countries by Number of Titles",
+        ylab = "Count of Titles",
+        las = 2)
+```
+# Figure 3 shows the top 10 countries producing content on Netflix. 
+# The United States leads by a wide margin, followed by India and the UK. 
+# This indicates that while Netflix has global reach, much of its content still originates from English-speaking or major media markets.
+
+# Figure 4: Top genres on Netflix
+```{r}
+
+genre_counts <- table(netflix$listed_in)
+top_genres <- sort(genre_counts, decreasing = TRUE)[1:10]
+
+top_genres_df <- as.data.frame(top_genres)
+colnames(top_genres_df) <- c("Genre", "Count")
+
+library(ggplot2)
+ggplot(top_genres_df, aes(x = reorder(Genre, Count), y = Count)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  coord_flip() +
+  labs(title = "Figure 4: Top 10 Genres",
+       x = "Genre", y = "Number of Titles") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10))
+
+
+
+```
+# Figure 4 highlights the most common genres on Netflix. 
+# International movies, documentaries, and stand-up comedy dominate the list. 
+# The presence of multiple types of “International” genres shows Netflix's global reach 
+# Family-friendly and kid-oriented content also reinforce the previous point.
+
+# Figure 5: Movie durations on Netflix
+```{r}
+
+movie_data <- subset(netflix, type == "Movie")
+movie_data$duration_mins <- as.numeric(gsub(" min", "", movie_data$duration))
+
+hist(movie_data$duration_mins,
+     main = "Figure 5: Movie Duration Distribution",
+     xlab = "Duration (minutes)",
+     col = "skyblue",
+     breaks = 30)
+```
+# Figure 5 presents the distribution of movie durations. 
+# Most films on Netflix fall in the 80–110 minute range, which is standard feature film length. 
+# Very short and very long movies are rare, which is as expected.
+
+# --- Conclusion ---
+# Through our analysis, we found several trends in Netflix content.
+# - The number of titles added grew steadily, peaking in recent years.
+# - Movies dominate the platform compared to TV Shows.
+# - The United States leads in content production, but Netflix hosts titles from many countries.
+# - Drama and international genres are among the most common.
+# - Movie durations cluster around 90-100 minutes, with a few outliers.
+
+# These insights are important for content creators to understand Netflix's strategy and also to see what works and what does not.
