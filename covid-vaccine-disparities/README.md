@@ -28,5 +28,5 @@ poorer countries with lower HDI were systematically
 under-vaccinated regardless of supply availability.
 
 ## Files
-- `vaccineanalysis.qmd` — main analysis 
+- `vaccineanalysis.qmd` — main Quarto analysis 
 - `vaccineanalysis_report.pdf` — full thesis write-up
