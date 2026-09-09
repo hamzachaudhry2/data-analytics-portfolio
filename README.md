@@ -36,7 +36,7 @@ selection via permutation importance.
 Analyzed 8,807 titles to surface a content surge peaking in 2019, movies 
 comprising 67% of the catalog, and the US, India, and UK as the top 3 
 contributing markets.
-**Tools:** R, ggplot2, tidyverse
+**Tools:** Python, Pandas, NumPy
 
 ---
 
