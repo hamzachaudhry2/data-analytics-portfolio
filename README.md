@@ -43,4 +43,3 @@ contributing markets.
 ## Contact
 - LinkedIn: linkedin.com/in/hamza-chaudhry2
 - Email: hamzach5@hotmail.com
-- Open to: Data Analyst / Business Analyst roles in Ontario
