@@ -1,5 +1,5 @@
 # Data Analytics Portfolio — Hamza Chaudhry
-M.Sc. Big Data Analytics (GPA 3.8) · Trent University · Ontario, Canada
+M.Sc. Big Data Analytics · Trent University · Ontario, Canada
 Power BI · SQL · Python · R · Business Intelligence · Statistical Modelling
 
 ---
